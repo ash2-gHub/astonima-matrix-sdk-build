@@ -1,0 +1,75 @@
+# CHAT-01-NATIVE-03 (F1 A): GitHub Actions workflow for a SEPARATE PUBLIC build repository that contains only this file
+# (as .github/workflows/build-xcframework.yml). It builds the iOS framework of @unomed/react-native-matrix-sdk from the
+# pinned upstream source only (no app code), checks the pins, proves that the regenerated bindings equal the published
+# npm package, and publishes the zip with its sha256 and a build-provenance attestation. Public repo: standard runners
+# are free. Manual start only. STOP (job fails) on any pin, binding or hash mismatch.
+name: build-matrix-xcframework
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+env:
+  UPSTREAM_REPO: unomed-dev/react-native-matrix-sdk
+  UPSTREAM_TAG: '0.10.2'
+  UPSTREAM_COMMIT: fb1204910ac43de120955ea56a84a170db5d0ba1
+  RUST_SDK_REV: 1c44fb66214667c6d00acaf72ab592493653708b
+  NPM_PACKAGE: '@unomed/react-native-matrix-sdk@0.10.2'
+jobs:
+  ios:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout pinned upstream tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_TAG }}
+          path: upstream
+      - name: STOP unless tag and matrix-rust-sdk pin are the expected ones
+        working-directory: upstream
+        run: |
+          test "$(git rev-parse HEAD)" = "$UPSTREAM_COMMIT" || { echo "STOP upstream commit"; exit 1; }
+          grep -q "rev: $RUST_SDK_REV" ubrn.yaml || { echo "STOP rust sdk rev"; exit 1; }
+      - name: Device target only (aarch64-apple-ios)
+        working-directory: upstream
+        run: |
+          python3 - <<'PY'
+          import re
+          p = 'ubrn.yaml'; s = open(p).read()
+          s2 = re.sub(r'(ios:\n(?:.*\n)*?  targets:\n)(?:    - .*\n)+', r'\1    - aarch64-apple-ios\n', s, count=1)
+          assert s2 != s and 'aarch64-apple-ios-sim' not in s2
+          open(p, 'w').write(s2)
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Rust toolchain
+        run: rustup target add aarch64-apple-ios
+      - name: Install upstream dev dependencies without lifecycle scripts (no binary download)
+        working-directory: upstream
+        run: corepack enable && yarn install --immutable --mode=skip-build
+      - name: Build framework from source (checkout pinned rust sdk + upstream patch, release)
+        working-directory: upstream
+        run: yarn ubrn:checkout && CARGO_FEATURE_NO_NEON=1 npx ubrn build ios --config ubrn.yaml --native-bindings --and-generate --release
+      - name: STOP unless the regenerated bindings equal the published npm package
+        run: |
+          mkdir npmpkg && cd npmpkg && npm pack "$NPM_PACKAGE" --silent && tar xzf *.tgz
+          cd ..
+          diff -r npmpkg/package/src/generated upstream/src/generated || { echo "STOP ts bindings differ"; exit 1; }
+          diff -r npmpkg/package/cpp/generated upstream/cpp/generated || { echo "STOP cpp bindings differ"; exit 1; }
+      - name: Zip and hash
+        working-directory: upstream
+        run: |
+          ditto -c -k --keepParent build/RnMatrixRustSdk.xcframework ../RnMatrixRustSdk.xcframework.zip
+          cd .. && shasum -a 256 RnMatrixRustSdk.xcframework.zip | tee RnMatrixRustSdk.xcframework.zip.sha256
+      - name: Build provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: RnMatrixRustSdk.xcframework.zip
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "matrix-xcframework-${UPSTREAM_TAG}-${GITHUB_RUN_ID}" RnMatrixRustSdk.xcframework.zip RnMatrixRustSdk.xcframework.zip.sha256 --repo "$GITHUB_REPOSITORY" --notes "upstream $UPSTREAM_COMMIT, rust sdk $RUST_SDK_REV, aarch64-apple-ios, run $GITHUB_RUN_ID"
+"build-xcframework.yml" wird angezeigt.
