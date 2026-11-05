@@ -50,6 +50,11 @@ jobs:
       - name: Install upstream dev dependencies without lifecycle scripts (no binary download)
         working-directory: upstream
         run: corepack enable && yarn install --immutable --mode=skip-build
+      - name: Apply the upstream patch-package patches only (ubrn swift-bindings working-directory fix; no binary download)
+        working-directory: upstream
+        run: yarn patch-package --error-on-fail
+      - name: clang-format (upstream iOS CI formats the generated C++ with it)
+        run: brew install clang-format
       - name: Build framework from source (checkout pinned rust sdk + upstream patch, release)
         working-directory: upstream
         run: yarn ubrn:checkout && CARGO_FEATURE_NO_NEON=1 npx ubrn build ios --config ubrn.yaml --native-bindings --and-generate --release
